@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { getActiveContext } from "@/lib/session";
+import { databaseReady } from "@/lib/db-check";
 import { Sidebar } from "@/components/sidebar";
 import { Topbar } from "@/components/topbar";
 
@@ -9,6 +10,9 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
+  // Fresh deploy without a database → guide to setup instead of a 500.
+  if (!(await databaseReady())) redirect("/setup");
+
   const session = await auth();
   if (!session?.user?.id) redirect("/login");
 

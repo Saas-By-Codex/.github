@@ -4,12 +4,15 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/db";
 import { signIn } from "@/lib/auth";
 import { signupSchema } from "@/lib/validation";
+import { databaseReady } from "@/lib/db-check";
 
-export default function SignupPage({
+export default async function SignupPage({
   searchParams,
 }: {
   searchParams: { error?: string };
 }) {
+  if (!(await databaseReady())) redirect("/setup");
+
   async function signup(formData: FormData) {
     "use server";
     const parsed = signupSchema.safeParse({

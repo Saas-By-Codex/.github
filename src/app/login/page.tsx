@@ -2,12 +2,15 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { signIn } from "@/lib/auth";
 import { AuthError } from "next-auth";
+import { databaseReady } from "@/lib/db-check";
 
-export default function LoginPage({
+export default async function LoginPage({
   searchParams,
 }: {
   searchParams: { error?: string };
 }) {
+  if (!(await databaseReady())) redirect("/setup");
+
   async function login(formData: FormData) {
     "use server";
     try {
