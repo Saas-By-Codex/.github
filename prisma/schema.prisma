@@ -1,0 +1,351 @@
+// EVFleetIQ — Prisma schema
+// Multi-tenant EV fleet monitoring. All data is scoped to an Organization.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────── Identity & Tenancy ───────────────────────────
+
+model User {
+  id            String       @id @default(cuid())
+  email         String       @unique
+  name          String?
+  passwordHash  String?      // null for OAuth-only users
+  image         String?
+  emailVerified DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  memberships   TeamMember[]
+  auditLogs     AuditLog[]
+  accounts      Account[]
+  sessions      Session[]
+}
+
+// Auth.js adapter models (OAuth providers, sessions).
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  // Free-form industry/segment for onboarding analytics.
+  industry    String?
+  // Currency + emission factor used by cost & ESG calculators.
+  currency    String   @default("USD")
+  // kg CO2 per kWh for the org's grid region (used for carbon savings).
+  gridCo2PerKwh Float  @default(0.371)
+  // Average local electricity price per kWh, used by the cost calculator.
+  electricityPricePerKwh Float @default(0.17)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members      TeamMember[]
+  vehicles     Vehicle[]
+  drivers      Driver[]
+  integrations IntegrationAccount[]
+  auditLogs    AuditLog[]
+  subscription Subscription?
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MANAGER
+  VIEWER
+}
+
+model TeamMember {
+  id             String       @id @default(cuid())
+  userId         String
+  organizationId String
+  role           Role         @default(VIEWER)
+  createdAt      DateTime     @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+// ─────────────────────────── Fleet & Vehicles ───────────────────────────
+
+enum VehicleProvider {
+  TESLA
+  FORD
+  HYUNDAI
+  KIA
+  BMW
+  SMARTCAR // generic telematics aggregator
+  SIMULATED
+}
+
+enum VehicleStatus {
+  ACTIVE
+  CHARGING
+  IDLE
+  MAINTENANCE
+  OFFLINE
+}
+
+model Vehicle {
+  id             String          @id @default(cuid())
+  organizationId String
+  // Externally-issued vehicle id from the integration (VIN or provider id).
+  externalId     String?
+  vin            String?
+  name           String
+  make           String
+  model          String
+  year           Int?
+  provider       VehicleProvider @default(SIMULATED)
+  status         VehicleStatus   @default(IDLE)
+  // Nominal usable battery capacity in kWh (for cost/range math).
+  batteryCapacityKwh Float       @default(60)
+  // EPA/WLTP rated range in km.
+  ratedRangeKm   Float           @default(400)
+  assignedDriverId String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assignedDriver   Driver?           @relation(fields: [assignedDriverId], references: [id])
+  telemetry        VehicleTelemetry[]
+  chargingSessions ChargingSession[]
+  alerts           MaintenanceAlert[]
+  trips            DriverTrip[]
+
+  @@index([organizationId])
+  @@unique([organizationId, externalId])
+}
+
+// Time-series snapshot of a vehicle's state.
+model VehicleTelemetry {
+  id            String   @id @default(cuid())
+  vehicleId     String
+  recordedAt    DateTime @default(now())
+  batteryLevel  Float    // state of charge, 0-100 (%)
+  batteryHealth Float    // state of health, 0-100 (%)
+  rangeKm       Float
+  odometerKm    Float
+  isCharging    Boolean  @default(false)
+  // Interior/battery temperature in Celsius.
+  temperatureC  Float?
+  latitude      Float?
+  longitude     Float?
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId, recordedAt])
+}
+
+enum ChargeLocationType {
+  HOME
+  DEPOT
+  PUBLIC
+  FAST_DC
+}
+
+model ChargingSession {
+  id            String             @id @default(cuid())
+  vehicleId     String
+  startedAt     DateTime
+  endedAt       DateTime?
+  startPercent  Float
+  endPercent    Float?
+  energyKwh     Float              @default(0)
+  // Cost is computed at write time using the org price snapshot.
+  costAmount    Float              @default(0)
+  currency      String             @default("USD")
+  locationType  ChargeLocationType @default(DEPOT)
+  locationName  String?
+  peakPowerKw   Float?
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId, startedAt])
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+model MaintenanceAlert {
+  id          String        @id @default(cuid())
+  vehicleId   String
+  title       String
+  description String
+  severity    AlertSeverity @default(INFO)
+  status      AlertStatus   @default(OPEN)
+  // Machine code for the rule that triggered it (e.g. BATTERY_HEALTH_LOW).
+  code        String
+  createdAt   DateTime      @default(now())
+  resolvedAt  DateTime?
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId, status])
+}
+
+// ─────────────────────────── Drivers & Trips ───────────────────────────
+
+model Driver {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  email          String?
+  licenseNumber  String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vehicles     Vehicle[]
+  trips        DriverTrip[]
+
+  @@index([organizationId])
+}
+
+model DriverTrip {
+  id              String   @id @default(cuid())
+  driverId        String
+  vehicleId       String
+  startedAt       DateTime
+  endedAt         DateTime
+  distanceKm      Float
+  energyUsedKwh   Float
+  // Behaviour metrics, each a count over the trip.
+  hardBrakingEvents     Int   @default(0)
+  rapidAccelEvents      Int   @default(0)
+  speedingEvents        Int   @default(0)
+  // 0-100 composite safety/efficiency score computed from the above.
+  score           Float    @default(100)
+
+  driver  Driver  @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, startedAt])
+  @@index([vehicleId, startedAt])
+}
+
+// ─────────────────────────── Integrations ───────────────────────────
+
+enum IntegrationStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
+// One connected manufacturer/telematics account per org+provider.
+// Tokens are stored ENCRYPTED (AES-256-GCM) — never in plain text.
+model IntegrationAccount {
+  id             String            @id @default(cuid())
+  organizationId String
+  provider       VehicleProvider
+  status         IntegrationStatus @default(DISCONNECTED)
+  // Ciphertext blobs (see lib/crypto.ts). Never logged or returned to client.
+  accessTokenEnc  String?  @db.Text
+  refreshTokenEnc String?  @db.Text
+  tokenExpiresAt  DateTime?
+  scopes          String?
+  lastSyncedAt    DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, provider])
+  @@index([organizationId])
+}
+
+// ─────────────────────────── Audit & Billing ───────────────────────────
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String?
+  // e.g. "vehicle.create", "integration.connect", "member.role_change"
+  action         String
+  // Target entity type + id for traceability.
+  targetType     String?
+  targetId       String?
+  // Arbitrary JSON-serialized context (no secrets).
+  metadata       String?  @db.Text
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id])
+
+  @@index([organizationId, createdAt])
+}
+
+enum SubscriptionPlan {
+  FREE
+  STARTER
+  GROWTH
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  organizationId       String             @unique
+  plan                 SubscriptionPlan   @default(FREE)
+  status               SubscriptionStatus @default(TRIALING)
+  // Stripe linkage (billing-ready; unused in demo mode).
+  stripeCustomerId     String?            @unique
+  stripeSubscriptionId String?            @unique
+  stripePriceId        String?
+  seats                Int                @default(3)
+  currentPeriodEnd     DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
