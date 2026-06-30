@@ -1,12 +1,17 @@
 import Link from "next/link";
+import { getDatabaseStatus } from "@/lib/db-check";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Shown when the app is deployed but the database isn't configured yet.
- * Pure static content — never touches the DB — so it always renders.
+ * Shown when the app is deployed but the database isn't ready yet. Runs a
+ * live diagnostic (instead of a static checklist) so the page tells you
+ * exactly which step is blocking — no DB connection found, vs. connected but
+ * tables missing, vs. a connection error.
  */
-export default function SetupPage() {
+export default async function SetupPage() {
+  const status = await getDatabaseStatus();
+
   return (
     <main className="mx-auto min-h-screen max-w-2xl px-6 py-16">
       <div className="flex items-center gap-2">
@@ -17,34 +22,74 @@ export default function SetupPage() {
       <div className="mt-8 rounded-xl border border-amber-200 bg-amber-50 p-5">
         <h1 className="text-xl font-semibold text-amber-900">Almost there — connect a database</h1>
         <p className="mt-2 text-sm text-amber-800">
-          The app deployed successfully, but it needs a PostgreSQL database before
-          you can log in. This takes about two minutes.
+          The app deployed successfully, but it needs a working PostgreSQL database before
+          you can log in.
         </p>
+      </div>
+
+      <div className="mt-6 rounded-xl border border-slate-200 bg-white p-5">
+        <h2 className="font-semibold text-slate-900">Live diagnosis</h2>
+
+        {!status.connectionVarFound ? (
+          <div className="mt-2 text-sm text-slate-600">
+            <p>
+              ❌ <strong>No database connection found.</strong> I checked{" "}
+              <code className="rounded bg-slate-100 px-1">DATABASE_URL</code>,{" "}
+              <code className="rounded bg-slate-100 px-1">POSTGRES_PRISMA_URL</code>, and{" "}
+              <code className="rounded bg-slate-100 px-1">POSTGRES_URL</code> — none are set on this
+              deployment.
+            </p>
+            <p className="mt-2">
+              Make sure you created a <strong>Postgres</strong> database (Storage → Create Database →
+              Postgres — <em>not</em> Edge Config), that it&apos;s connected to <strong>this</strong>{" "}
+              project, that the var is enabled for the <strong>Production</strong> environment, and that
+              you redeployed <em>after</em> connecting it.
+            </p>
+          </div>
+        ) : status.ready ? (
+          <p className="mt-2 text-sm text-brand-700">
+            ✅ Connected via <code className="rounded bg-slate-100 px-1">{status.connectionVarFound}</code>{" "}
+            and tables look present. If you&apos;re still seeing this page, try reloading.
+          </p>
+        ) : (
+          <div className="mt-2 text-sm text-slate-600">
+            <p>
+              ⚠️ Found a connection string in{" "}
+              <code className="rounded bg-slate-100 px-1">{status.connectionVarFound}</code>, but the
+              database query failed{status.errorCode ? ` (code ${status.errorCode})` : ""}.
+            </p>
+            {status.errorMessage && (
+              <pre className="mt-2 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-100">
+                {status.errorMessage}
+              </pre>
+            )}
+            <p className="mt-2">
+              This usually means the tables haven&apos;t been created yet. Open{" "}
+              <strong>Deployments → latest → Logs</strong> in Vercel and look for lines starting with{" "}
+              <code className="rounded bg-slate-100 px-1">[vercel-build]</code> — they say whether table
+              creation succeeded or why it didn&apos;t.
+            </p>
+          </div>
+        )}
       </div>
 
       <ol className="mt-8 space-y-6">
         <Step n={1} title="Add a Postgres database">
           In Vercel, open your project → <strong>Storage</strong> → <strong>Create Database</strong> →
-          <strong> Postgres</strong> (or add the <em>Neon</em> / <em>Supabase</em> integration). Vercel
-          sets <code className="rounded bg-slate-100 px-1">DATABASE_URL</code> for you automatically.
+          <strong> Postgres</strong>, and connect it to this project for the{" "}
+          <strong>Production</strong> environment.
         </Step>
         <Step n={2} title="Add the remaining environment variables">
           Project → <strong>Settings</strong> → <strong>Environment Variables</strong> (Production):
           <ul className="mt-2 space-y-1 text-sm text-slate-600">
-            <li><code className="rounded bg-slate-100 px-1">AUTH_SECRET</code> — run <code>openssl rand -base64 32</code></li>
-            <li><code className="rounded bg-slate-100 px-1">TOKEN_ENCRYPTION_KEY</code> — run <code>openssl rand -hex 32</code></li>
-            <li><code className="rounded bg-slate-100 px-1">NEXTAUTH_URL</code> — your deployment URL</li>
+            <li><code className="rounded bg-slate-100 px-1">AUTH_SECRET</code></li>
+            <li><code className="rounded bg-slate-100 px-1">TOKEN_ENCRYPTION_KEY</code></li>
             <li><code className="rounded bg-slate-100 px-1">DEMO_MODE</code> = <code>true</code></li>
           </ul>
         </Step>
-        <Step n={3} title="Create the tables">
-          Locally, with that <code className="rounded bg-slate-100 px-1">DATABASE_URL</code> in your
-          <code> .env</code>, run <code className="rounded bg-slate-100 px-1">npm run prisma:deploy</code>
-          {" "}then <code className="rounded bg-slate-100 px-1">npm run db:seed</code> for a demo fleet.
-        </Step>
-        <Step n={4} title="Redeploy">
-          Trigger a redeploy in Vercel so it picks up the new variables. Then reload — you&apos;ll land
-          on the dashboard.
+        <Step n={3} title="Redeploy">
+          Tables and demo data are created automatically during the build — just redeploy after the
+          database and env vars are in place, then reload this page.
         </Step>
       </ol>
 
