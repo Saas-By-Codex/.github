@@ -13,6 +13,12 @@ import { loginSchema } from "@/lib/validation";
 export const { handlers, signIn, signOut, auth } = NextAuth({
   adapter: PrismaAdapter(prisma),
   session: { strategy: "jwt" },
+  // Required on Vercel/proxied hosts so Auth.js trusts the forwarded host
+  // header instead of throwing UntrustedHost.
+  trustHost: true,
+  // Prefer the env secret; fall back to a clearly-insecure dev value so a
+  // zero-config deploy still boots. OVERRIDE `AUTH_SECRET` in production.
+  secret: process.env.AUTH_SECRET ?? "evfleetiq-insecure-dev-secret-change-me",
   pages: { signIn: "/login" },
   providers: [
     Credentials({
